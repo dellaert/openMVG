@@ -18,7 +18,7 @@ SET_PROPERTY(TARGET openMVG_main_computeMatches PROPERTY FOLDER OpenMVG/software
 
 INSTALL(TARGETS openMVG_main_computeMatches DESTINATION bin/)
 
-#Add library and executable that perform SfM:
+#Add library and executable that performs SfM:
 # - the required input is matches computed by openMVG_main_computeMatches
 #
 ADD_LIBRARY(openMVG_SfM_Sequential SfMIncrementalEngine.cpp)
