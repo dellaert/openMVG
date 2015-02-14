@@ -140,6 +140,19 @@ SET_PROPERTY(TARGET lib_clp PROPERTY FOLDER OpenMVG/3rdParty/osi_clp)
 #--END-- LINEAR PROGRAMMING SOLVER
 #===============================
 
+# ==============================================================================
+# Find optional GTSAM components
+# ==============================================================================
+INCLUDE_DIRECTORIES(BEFORE "${PROJECT_SOURCE_DIR}")
+FIND_PACKAGE(GTSAM QUIET) # Uses installed package
+IF(GTSAM_INCLUDE_DIR)
+  MESSAGE("GTSAM FOUND")
+  INCLUDE_DIRECTORIES(${GTSAM_INCLUDE_DIR})
+  SET(GTSAM_LIB gtsam)
+ELSE()
+  MESSAGE("GTSAM is not FOUND and will not be used")
+ENDIF()
+# ==============================================================================
 
 # ==============================================================================
 # Opencv is not used by openMVG but some samples show how to use openCV
@@ -192,6 +205,7 @@ SET(OpenMVG_INCLUDES
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ceres-solver/internal/ceres/miniglog
   ${PROJECT_BINARY_DIR}/third_party/ceres-solver/config
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/flann/src/cpp
+  ${GTSAM_INCLUDE_DIR}
   CACHE PATH "include directories for openMVG and its dependencies"
 )
 
@@ -234,7 +248,8 @@ SET(OpenMVG_LIBS "${OpenMVG_LIBS}"
   flann_cpp_s
   ceres
   lemon
-  easyexif)
+  easyexif
+  ${GTSAM_LIB})
 SET(OpenMVG_LIBS "${OpenMVG_LIBS}"
   ${OPENMVG_LIBRARY_DEPENDENCIES} CACHE STRING "openMVG library names")
 
