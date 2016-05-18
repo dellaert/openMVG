@@ -1,31 +1,4 @@
-//  Copyright (c) 2014, Kyle Wilson
-//  All rights reserved.
-//
-//  Redistribution and use in source and binary forms, with or without
-//  modification, are permitted provided that the following conditions are met:
-//
-//  1. Redistributions of source code must retain the above copyright notice, this
-//  list of conditions and the following disclaimer. 
-//  2. Redistributions in binary form must reproduce the above copyright notice,
-//  this list of conditions and the following disclaimer in the documentation
-//  and/or other materials provided with the distribution.
-//
-//  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-//  ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-//  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-//  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
-//  ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-//  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-//  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-//  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-//  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-//  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-//
-//  The views and conclusions contained in the software and documentation are those
-//  of the authors and should not be interpreted as representing official policies, 
-//  either expressed or implied, of the FreeBSD Project.
-
-// Copyright (c) 2014 Pierre MOULON (Updated for openMVG).
+// Copyright (c) 2014 Pierre MOULON
 
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -34,6 +7,10 @@
 #ifndef __TRANS_SOLVER_H__
 #define __TRANS_SOLVER_H__
 
+#include "openMVG/multiview/translation_averaging_common.hpp"
+
+#include <vector>
+
 //------------------
 //-- Bibliography --
 //------------------
@@ -41,11 +18,19 @@
 //- Authors: Kyle Wilson and Noah Snavely.
 //- Date: September 2014.
 //- Conference: ECCV.
+//
+//- [2] "Global Fusion of Relative Motions for Robust, Accurate and Scalable Structure from Motion."
+//- Authors: Pierre Moulon, Pascal Monasse and Renaud Marlet.
+//- Date: December 2013.
+//- Conference: ICCV.
+
+namespace openMVG {
 
 /// Implementation of [1] : "5. Solving the Translations Problem" equation (3)
 /// Compute camera center positions from relative camera translations (translation directions).
-bool 
-solve_translations_problem(
+bool
+solve_translations_problem_l2_chordal
+(
   const int* edges,
   const double* poses,
   const double* weights,
@@ -54,6 +39,31 @@ solve_translations_problem(
   double* X,
   double function_tolerance,
   double parameter_tolerance,
-  int max_iterations);
+  int max_iterations
+);
 
-#endif /* __TRANS_SOLVER_H__ */
+/**
+* @brief Registration of relative translations to global translations. It implements LInf minimization of  [2]
+*  as a SoftL1 minimization. It can use group of relative translation vectors (bearing, or n-uplets of translations).
+*  All relative motions must be 1 connected component.
+*
+* @param[in] vec_initial_estimates group of relative motion information
+*             Each group will have it's own optimized scale
+*             Bearing: 2 view estimates => essential matrices)
+*             N-Uplets: N-view estimates => i.e. 3 view estimations means a triplet of relative motion
+
+* @param[out] translations found global camera translations
+* @param[in] d_l1_loss_threshold optionnal threshold for SoftL1 loss (-1: no loss function)
+* @return True if the registration can be solved
+*/
+bool
+solve_translations_problem_softl1
+(
+  const std::vector<openMVG::RelativeInfo_Vec > & vec_initial_estimates,
+  std::vector<Eigen::Vector3d> & translations,
+  const double d_l1_loss_threshold = 0.01
+);
+
+} // namespace openMVG
+
+#endif // __TRANS_SOLVER_H__

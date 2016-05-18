@@ -48,8 +48,8 @@ using namespace linearProgramming;
 
 /// Encode translation and structure linear program with slack variables
 ///  in order to handle noisy measurements.
-void EncodeTiXi_withNoise(const Mat & M, //Scene representation
-                           const std::vector<Mat3> Ri,
+inline void EncodeTiXi_withNoise(const Mat & M, //Scene representation
+                           const std::vector<Mat3> & Ri,
                            double sigma, // Start upper bound
                            sRMat & A, Vec & C,
                            std::vector<LP_Constraints::eLP_SIGN> & vec_sign,
@@ -94,7 +94,7 @@ void EncodeTiXi_withNoise(const Mat & M, //Scene representation
     vec_bounds[offsetStart + k].first = 0;
 
   size_t rowPos = 0;
-  // Add the cheirality conditions (R_i*X_j + T_i)_3 + Z_ij >= 1
+  // Add the cheirality conditions (R_i*X_j + T_i)_3 >= 1
   for (size_t k = 0; k < Nobs; ++k)
   {
     const size_t indexPt3D = M(2,k);
@@ -195,13 +195,13 @@ struct TiXi_withNoise_L1_ConstraintBuilder
   {
     EncodeTiXi_withNoise(_M, _vec_Ri,
       gamma,
-      constraint._constraintMat,
-      constraint._Cst_objective,
-      constraint._vec_sign,
-      constraint._vec_cost,
-      constraint._vec_bounds);
+      constraint.constraint_mat_,
+      constraint.constraint_objective_,
+      constraint.vec_sign_,
+      constraint.vec_cost_,
+      constraint.vec_bounds_);
 
-    constraint._bminimize = true;
+    constraint.bminimize_ = true;
 
     //-- Setup additional information about the Linear Program constraint
     // We look for nb translations and nb 3D points.
@@ -210,7 +210,7 @@ struct TiXi_withNoise_L1_ConstraintBuilder
     const size_t NNoiseVar = Nobs; // noise over Zdepth, (x,y) residual
     const size_t Ncam = (size_t) _M.row(3).maxCoeff() + 1;
 
-    constraint._nbParams = (Ncam + N3D + NNoiseVar)*3;
+    constraint.nbParams_ = (Ncam + N3D + NNoiseVar)*3;
 
     return true;
   }

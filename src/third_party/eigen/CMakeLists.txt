@@ -1,6 +1,5 @@
 project(Eigen)
-
-cmake_minimum_required(VERSION 2.8.2)
+cmake_minimum_required(VERSION 2.8.5)
 
 # guard against in-source builds
 
@@ -8,9 +7,19 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_BINARY_DIR})
   message(FATAL_ERROR "In-source builds not allowed. Please make a new directory (called a build directory) and run CMake from there. You may need to remove CMakeCache.txt. ")
 endif()
 
-IF(NOT CMAKE_BUILD_TYPE AND NOT MSVC)
-  SET(CMAKE_BUILD_TYPE "Release")
-ENDIF(NOT CMAKE_BUILD_TYPE AND NOT MSVC)
+# guard against bad build-type strings
+
+if (NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE "Release")
+endif()
+
+string(TOLOWER "${CMAKE_BUILD_TYPE}" cmake_build_type_tolower)
+if(    NOT cmake_build_type_tolower STREQUAL "debug"
+   AND NOT cmake_build_type_tolower STREQUAL "release"
+   AND NOT cmake_build_type_tolower STREQUAL "relwithdebinfo")
+  message(FATAL_ERROR "Unknown build type \"${CMAKE_BUILD_TYPE}\". Allowed values are Debug, Release, RelWithDebInfo (case-insensitive).")
+endif()
+
 
 #############################################################################
 # retrieve version information                                               #
@@ -43,27 +52,29 @@ else(EIGEN_HG_CHANGESET)
   set(EIGEN_VERSION "${EIGEN_VERSION_NUMBER}")
 endif(EIGEN_HG_CHANGESET)
 
-# the user modifiable install path for header files
-set(EIGEN_INCLUDE_INSTALL_DIR ${EIGEN_INCLUDE_INSTALL_DIR} CACHE PATH "The directory where we install the header files (optional)")
+set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
-# set the internal install path for header files which depends on whether the user modifiable
-# EIGEN_INCLUDE_INSTALL_DIR has been set by the user or not.
-if(EIGEN_INCLUDE_INSTALL_DIR)
-  set(INCLUDE_INSTALL_DIR
-    ${EIGEN_INCLUDE_INSTALL_DIR}
-    CACHE INTERNAL
-    "The directory where we install the header files (internal)"
-  )
+include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+
+# Backward compatibility support for EIGEN_INCLUDE_INSTALL_DIR
+if(EIGEN_INCLUDE_INSTALL_DIR AND NOT INCLUDE_INSTALL_DIR)
+  set(INCLUDE_INSTALL_DIR ${EIGEN_INCLUDE_INSTALL_DIR}
+      CACHE PATH "The directory relative to CMAKE_PREFIX_PATH where Eigen header files are installed")
 else()
   set(INCLUDE_INSTALL_DIR
-    "${CMAKE_INSTALL_PREFIX}/include/eigen3"
-    CACHE INTERNAL
-    "The directory where we install the header files (internal)"
-  )
+      "${CMAKE_INSTALL_INCLUDEDIR}/eigen3"
+      CACHE PATH "The directory relative to CMAKE_PREFIX_PATH where Eigen header files are installed"
+      )
 endif()
 
-SET(CMAKE_MODULE_PATH
-  ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+set(CMAKEPACKAGE_INSTALL_DIR
+    "${CMAKE_INSTALL_LIBDIR}/cmake/eigen3"
+    CACHE PATH "The directory relative to CMAKE_PREFIX_PATH where Eigen3Config.cmake is installed"
+    )
+set(PKGCONFIG_INSTALL_DIR
+    "${CMAKE_INSTALL_DATADIR}/pkgconfig"
+    CACHE PATH "The directory relative to CMAKE_PREFIX_PATH where eigen3.pc is installed"
+    )
 
 add_subdirectory(Eigen)
 

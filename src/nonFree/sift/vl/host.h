@@ -18,7 +18,7 @@ the terms of the BSD license (see the COPYING file).
  ** @name Configuration options
  ** @{ */
 
- #if defined __clang__
+#if defined __clang__
 #define VL_DISABLE_THREADS
 #endif
 
@@ -320,7 +320,9 @@ defined(__DOXYGEN__)
 #if defined(VL_COMPILER_MSC) & ! defined(__DOXYGEN__)
 #  define VL_UNUSED
 #  define VL_INLINE static __inline
+#if _MSC_VER < 1900
 #  define snprintf _snprintf
+#endif
 #  define isnan _isnan
 #  ifdef VL_BUILD_DLL
 #    ifdef __cplusplus
@@ -371,7 +373,7 @@ VL_INLINE float fabsf(float x) { return (float) fabs((double) x) ; }
 
 # if defined(VL_OS_MACOSX)
 # undef VL_EXPORT
-# define VL_EXPORT
+# define VL_EXPORT extern
 #endif
 
 

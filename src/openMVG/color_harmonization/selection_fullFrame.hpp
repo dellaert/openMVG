@@ -21,7 +21,7 @@ public:
         commonDataByPair( sLeftImage, sRightImage )
   {}
 
-  virtual ~commonDataByPair_FullFrame() {}
+  ~commonDataByPair_FullFrame() override = default ; 
 
   /**
    * Put masks to white, all image is considered as valid pixel selection
@@ -31,10 +31,10 @@ public:
    *
    * \return True.
    */
-  virtual bool computeMask( Image< unsigned char > & maskLeft, Image< unsigned char > & maskRight )
+  bool computeMask( image::Image< unsigned char > & maskLeft, image::Image< unsigned char > & maskRight ) override 
   {
-    maskLeft.fill( WHITE );
-    maskRight.fill( WHITE );
+    maskLeft.fill( image::WHITE );
+    maskRight.fill( image::WHITE );
     return true;
   }
 

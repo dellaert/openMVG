@@ -6,6 +6,9 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 #include "openMVG/multiview/rotation_averaging_l1.hpp"
+#include "openMVG/numeric/l1_solver_admm.hpp"
+#include <Eigen/SparseCholesky>
+#include <Eigen/Cholesky>
 
 #ifdef HAVE_BOOST
 #include <boost/graph/adjacency_list.hpp>
@@ -27,7 +30,6 @@ using namespace boost;
 using namespace lemon;
 #endif
 
-
 #include "ceres/ceres.h"
 #include "ceres/rotation.h"
 
@@ -38,251 +40,6 @@ using namespace lemon;
 namespace openMVG   {
 namespace rotation_averaging  {
 namespace l1  {
-
-// Minimum l1 error approximation:
-//
-// Let A be a M x N matrix with full rank. Given y of R^M, the problem
-// (PA) minx ||y - Ax||1
-// finds the vector x of R^N such that the error y - Ax has minimum l1 norm
-// (i.e. we are asking that the difference between Ax and y be sparse).
-// This problem arises in the context of channel coding
-// (see E. J. Candes and T. Tao. "Decoding by linear programming". in IEEE Trans.
-// Inform. Theory, December 2005).
-//
-// Suppose we have a channel code that produces a codeword c = Ax for a message x. The
-// message travels over the channel, and has an unknown number of its entries corrupted.
-// The decoder observes y = c + e, where e is the corruption. If e is sparse enough, then
-// the decoder can use (PA) to recover x exactly. When x, A, y have real-valued entries,
-// (PA) can be recast as an LP.
-//
-template<typename MATRIX_TYPE>
-inline bool TRobustRegressionL1PD(
-  const MATRIX_TYPE& A,
-  const Eigen::Matrix<REAL, Eigen::Dynamic, 1>& y,
-  Eigen::Matrix<REAL, Eigen::Dynamic, 1>& xp,
-  REAL pdtol, unsigned pdmaxiter)
-{
-  typedef Eigen::Matrix<REAL, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> Matrix;
-  typedef Eigen::Matrix<REAL, Eigen::Dynamic, 1> Vector;
-  const unsigned M = (unsigned)y.size();
-  const unsigned N = (unsigned)xp.size();
-  assert(A.rows() == M && A.cols() == N);
-
-  const REAL alpha(0.01);
-  const REAL beta(0.5);
-  const REAL mu(10);
-
-  Vector x(xp);
-  Vector Ax(A*x);
-  Vector tmpM1(y-Ax);
-  Vector tmpM2(-tmpM1);
-  Vector tmpM3(tmpM1.cwiseAbs()), tmpM4(M);
-  Vector u = (tmpM3*REAL(0.95)).array() + tmpM3.maxCoeff()*REAL(0.10);
-  Vector fu1 = tmpM2-u;
-  Vector fu2 = tmpM1-u;
-
-  Vector lamu1(M), lamu2(M);
-  for (unsigned i=0; i<M; ++i) {
-    lamu1(i) = -1.0/fu1(i);
-    lamu2(i) = -1.0/fu2(i);
-  }
-  const MATRIX_TYPE At(A.transpose());
-  Vector Atv(At*(lamu1-lamu2));
-  REAL AtvNormSq = Atv.squaredNorm();
-  Vector rdual((-lamu1-lamu2).array() + REAL(1));
-  REAL rdualNormSq = rdual.squaredNorm();
-
-  Vector w2(M), sig1(M), sig2(M), sigx(M), dx(N), up(N), Atdv(N);
-  Vector Axp(M), Atvp(M);
-  Vector &Adx(sigx), &du(w2), &w1p(dx);
-  Matrix H11p(N,N);
-  Vector &dlamu1(tmpM3), &dlamu2(tmpM4);
-  for (unsigned pditer=0; pditer<pdmaxiter; ++pditer) {
-    // surrogate duality gap
-    const REAL sdg(-(fu1.dot(lamu1) + fu2.dot(lamu2)));
-    if (sdg < pdtol)
-      break;
-    const REAL tau(mu*2*M/sdg);
-    const REAL inv_tau = REAL(-1)/tau;
-    tmpM1 = (-lamu1.cwiseProduct(fu1)).array() + inv_tau;
-    tmpM2 = (-lamu2.cwiseProduct(fu2)).array() + inv_tau;
-    const REAL resnorm = sqrt(AtvNormSq + rdualNormSq + tmpM1.squaredNorm() + tmpM2.squaredNorm());
-
-    for (unsigned i=0; i<M; ++i) {
-      REAL& tmpM3i = tmpM3(i);
-      tmpM3i = inv_tau/fu1(i);
-      REAL& tmpM4i = tmpM4(i);
-      tmpM4i = inv_tau/fu2(i);
-      w2(i) = tmpM3i + tmpM4i - REAL(1);
-    }
-
-    tmpM1 = lamu1.cwiseQuotient(fu1);
-    tmpM2 = lamu2.cwiseQuotient(fu2);
-    sig1 = -tmpM1 - tmpM2;
-    sig2 = tmpM1 - tmpM2;
-    sigx = sig1 - sig2.cwiseAbs2().cwiseQuotient(sig1);
-
-    H11p = At*(Eigen::DiagonalMatrix<REAL,Eigen::Dynamic>(sigx)*A);
-    w1p = At*(tmpM4 - tmpM3 - (sig2.cwiseQuotient(sig1).cwiseProduct(w2)));
-
-    // optimized solver as A is positive definite and symmetric
-    dx = H11p.ldlt().solve(w1p);
-
-    Adx = A*dx;
-
-    du = (w2 - sig2.cwiseProduct(Adx)).cwiseQuotient(sig1);
-
-    dlamu1 = -tmpM1.cwiseProduct(Adx-du) - lamu1 + tmpM3;
-    dlamu2 =  tmpM2.cwiseProduct(Adx+du) - lamu2 + tmpM4;
-    Atdv = At*(dlamu1-dlamu2);
-
-    // make sure that the step is feasible: keeps lamu1,lamu2 > 0, fu1,fu2 < 0
-    REAL s(1);
-    for (unsigned i=0; i<M; ++i) {
-      REAL& dlamu1i = dlamu1(i);
-      if (dlamu1i < 0) {
-        const REAL tmp = -lamu1(i)/dlamu1i;
-        if (s > tmp)
-          s = tmp;
-      }
-      REAL& dlamu2i = dlamu2(i);
-      if (dlamu2i < 0) {
-        const REAL tmp = -lamu2(i)/dlamu2i;
-        if (s > tmp)
-          s = tmp;
-      }
-    }
-    for (unsigned i=0; i<M; ++i) {
-      REAL& Adxi = Adx(i);
-      REAL& dui = du(i);
-      const REAL Adx_du = Adxi-dui;
-      if (Adx_du > 0) {
-        const REAL tmp = -fu1(i)/Adx_du;
-        if (s > tmp)
-          s = tmp;
-      }
-      const REAL _Adx_du = -Adxi-dui;
-      if (_Adx_du > 0) {
-        const REAL tmp = -fu2(i)/_Adx_du;
-        if (s > tmp)
-          s = tmp;
-      }
-    }
-    s *= REAL(0.99);
-
-    // backtrack
-    lamu1 += s*dlamu1;  lamu2 += s*dlamu2;
-    rdual = (-lamu1-lamu2).array() + REAL(1);
-    rdualNormSq = rdual.squaredNorm();
-    bool suffdec = false;
-    unsigned backiter = 0;
-    do {
-      xp = x + s*dx;  up = u + s*du;
-      Axp = Ax + s*Adx;  Atvp = Atv + s*Atdv;
-      fu1 = Axp - y - up;  fu2 = -Axp + y - up;
-      AtvNormSq = Atvp.squaredNorm();
-      tmpM1 = (-lamu1.cwiseProduct(fu1)).array() + inv_tau;
-      tmpM2 = (-lamu2.cwiseProduct(fu2)).array() + inv_tau;
-      const REAL newresnorm = sqrt(AtvNormSq + rdualNormSq + tmpM1.squaredNorm() + tmpM2.squaredNorm());
-      suffdec = (newresnorm <= (REAL(1)-alpha*s)*resnorm);
-      s = beta*s;
-      if (++backiter > 32) {
-        //("error: stuck backtracking, returning last iterate"); // see Section 4 of notes for more information
-        xp.swap(x);
-        return false;
-      }
-    } while (!suffdec);
-
-    // next iteration
-    x.swap(xp);  u.swap(up);
-    Ax.swap(Axp);  Atv.swap(Atvp);
-  }
-  return true;
-}
-
-bool RobustRegressionL1PD(
-  const Eigen::Matrix<REAL, Eigen::Dynamic, Eigen::Dynamic>& A,
-  const Eigen::Matrix<REAL, Eigen::Dynamic, 1>& b,
-  Eigen::Matrix<REAL, Eigen::Dynamic, 1>& x,
-  REAL pdtol, unsigned pdmaxiter)
-{
-  return TRobustRegressionL1PD(A, b, x, pdtol, pdmaxiter);
-}
-bool RobustRegressionL1PD(
-  const Eigen::SparseMatrix<REAL, Eigen::ColMajor>& A,
-  const Eigen::Matrix<REAL, Eigen::Dynamic, 1>& b,
-  Eigen::Matrix<REAL, Eigen::Dynamic, 1>& x,
-  REAL pdtol, unsigned pdmaxiter)
-{
-  return TRobustRegressionL1PD(A, b, x, pdtol, pdmaxiter);
-}
-
-/*----------------------------------------------------------------*/
-
-// Iteratively Re-weighted Least Squares (IRLS) implementation
-template<typename MATRIX_TYPE>
-inline bool TIterativelyReweightedLeastSquares(
-  const MATRIX_TYPE& A,
-  const Eigen::Matrix<REAL, Eigen::Dynamic, 1>& b,
-  Eigen::Matrix<REAL, Eigen::Dynamic, 1>& x,
-  REAL sigma, REAL eps)
-{
-  typedef Eigen::Matrix<REAL, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> Matrix;
-  typedef Eigen::Matrix<REAL, Eigen::Dynamic, 1> Vector;
-  const unsigned m = (unsigned)b.size();
-  const unsigned n = (unsigned)x.size();
-  assert(A.rows() == m && A.cols() == n);
-
-  // iterate optimization till the desired precision is reached
-  Vector xp(n), e(m);
-  const REAL sigmaSq(Square(sigma));
-  unsigned iter = 0;
-  REAL delta = std::numeric_limits<REAL>::max(), deltap;
-  do {
-    xp = x;
-    // compute error vector
-    e = A*x-b;
-    // compute robust errors using the Huber-like loss function
-    for (unsigned i=0; i<m; ++i) {
-      REAL& err = e(i);
-      const REAL errSq(Square(err));
-      err = sigmaSq / (errSq + sigmaSq);
-    }
-    // solve the linear system using l2 norm
-    const MATRIX_TYPE AtF(A.transpose()*e.asDiagonal());
-    const Eigen::LDLT<Matrix> solver(AtF*A); // compute the Cholesky decomposition
-    if (solver.info() != Eigen::Success) {
-      std::cerr << "error: decomposing linear system failed" << std::endl;
-      return false;
-    }
-    x = solver.solve(AtF*b);
-    if (solver.info() != Eigen::Success) {
-      std::cerr << "error: solving linear system failed" << std::endl;
-      return false;
-    }
-    if (++iter > 32)
-      break;
-    deltap = delta; delta = (xp-x).norm();
-  } while (delta > eps && (deltap-delta)/delta > 1e-2);
-  return true;
-}
-
-bool IterativelyReweightedLeastSquares(
-  const Eigen::Matrix<REAL, Eigen::Dynamic, Eigen::Dynamic>& A,
-  const Eigen::Matrix<REAL, Eigen::Dynamic, 1>& b,
-  Eigen::Matrix<REAL, Eigen::Dynamic, 1>& x,
-  REAL sigma, REAL eps)
-{
-  return TIterativelyReweightedLeastSquares(A, b, x, sigma, eps);
-}
-bool IterativelyReweightedLeastSquares(
-  const Eigen::SparseMatrix<REAL, Eigen::ColMajor>& A,
-  const Eigen::Matrix<REAL, Eigen::Dynamic, 1>& b,
-  Eigen::Matrix<REAL, Eigen::Dynamic, 1>& x,
-  REAL sigma, REAL eps)
-{
-  return TIterativelyReweightedLeastSquares(A, b, x, sigma, eps);
-}
 
 /////////////////////////
 
@@ -325,7 +82,7 @@ typedef std::vector<Node> NodeArr;
 struct Link {
   size_t ID; // node index
   size_t parentID;// parent link
-  inline Link(size_t _ID=0, size_t _parentID=0) : ID(_ID), parentID(_parentID) {}
+  inline Link(size_t ID_=0, size_t parentID_=0) : ID(ID_), parentID(parentID_) {}
 };
 typedef std::queue<Link> LinkQue;
 
@@ -344,12 +101,12 @@ typedef std::map<std::pair<size_t,size_t>, Matrix3x3> MapEdgeIJ2R;
 // Look for the maximum spanning tree along the graph of relative rotations
 // since we look for the maximum spanning tree using a minimum spanning tree algorithm
 // weight are negated.
-size_t FindMaximumSpanningTree(const std::vector<RelRotationData>& RelRs, graph_t& g, MapEdgeIJ2R& mapIJ2R, NodeArr& minGraph)
+size_t FindMaximumSpanningTree(const RelativeRotations& RelRs, graph_t& g, MapEdgeIJ2R& mapIJ2R, NodeArr& minGraph)
 {
   assert(!RelRs.empty());
 #ifdef HAVE_BOOST
   for (size_t p = 0; p < RelRs.size(); ++p) {
-    const RelRotationData& relR = RelRs[p];
+    const RelativeRotation& relR = RelRs[p];
     boost::add_edge(relR.i, relR.j, - relR.weight, g);
     mapIJ2R[std::make_pair(relR.i, relR.j)] = relR.Rij;
     mapIJ2R[std::make_pair(relR.j, relR.i)] = relR.Rij.transpose();
@@ -371,7 +128,7 @@ size_t FindMaximumSpanningTree(const std::vector<RelRotationData>& RelRs, graph_
   //A-- Compute the number of node we need
   std::set<size_t> setNodes;
   for (size_t p = 0; p < RelRs.size(); ++p) {
-    const RelRotationData& relR = RelRs[p];
+    const RelativeRotation& relR = RelRs[p];
     setNodes.insert(relR.i);
     setNodes.insert(relR.j);
   }
@@ -389,7 +146,7 @@ size_t FindMaximumSpanningTree(const std::vector<RelRotationData>& RelRs, graph_
   //C-- Create a graph from RelRs with weighted edges
   map_EdgeMap map_edgeMap(g);
   for (size_t p = 0; p < RelRs.size(); ++p) {
-    const RelRotationData& relR = RelRs[p];
+    const RelativeRotation& relR = RelRs[p];
     mapIJ2R[std::make_pair(relR.i, relR.j)] = relR.Rij;
     mapIJ2R[std::make_pair(relR.j, relR.i)] = relR.Rij.transpose();
 
@@ -420,7 +177,7 @@ size_t FindMaximumSpanningTree(const std::vector<RelRotationData>& RelRs, graph_
 // Filter the given relative rotations using the known global rotations
 // returns the number of inliers
 unsigned int FilterRelativeRotations(
-  const std::vector<RelRotationData>& RelRs,
+  const RelativeRotations& RelRs,
   const Matrix3x3Arr& Rs,
   float threshold,
   std::vector<bool> * vec_inliers)
@@ -430,7 +187,7 @@ unsigned int FilterRelativeRotations(
   // compute errors for each relative rotation
   std::vector<float> errors(RelRs.size());
   for(int r= 0; r<RelRs.size(); ++r) {
-    const RelRotationData& relR = RelRs[r];
+    const RelativeRotation& relR = RelRs[r];
     const Matrix3x3& Ri = Rs[relR.i];
     const Matrix3x3& Rj = Rs[relR.j];
     const Matrix3x3& Rij = relR.Rij;
@@ -450,7 +207,7 @@ unsigned int FilterRelativeRotations(
   // mark outliers
   unsigned int nInliers = 0;
   for(int r=0; r<errors.size(); ++r) {
-    bool bInlier = (errors[r] < threshold);
+    const bool bInlier = (errors[r] < threshold);
     if (vec_inliers)
       (*vec_inliers)[r] = bInlier;
     if (bInlier)
@@ -461,17 +218,23 @@ unsigned int FilterRelativeRotations(
 //----------------------------------------------------------------
 
 
-REAL RelRotationAvgError(const std::vector<RelRotationData>& RelRs, const Matrix3x3Arr& Rs, REAL* pMin=NULL, REAL* pMax=NULL)
+double RelRotationAvgError
+(
+  const RelativeRotations& RelRs,
+  const Matrix3x3Arr& Rs,
+  double* pMin=nullptr,
+  double* pMax=nullptr
+)
 {
 #ifdef HAVE_BOOST
-  boost::accumulators::accumulator_set<REAL,
+  boost::accumulators::accumulator_set<double,
     boost::accumulators::stats<
       boost::accumulators::tag::min,
       boost::accumulators::tag::mean,
       boost::accumulators::tag::max> > acc;
 
   for(int i=0; i < RelRs.size(); ++i) {
-    const RelRotationData& relR = RelRs[i];
+    const RelativeRotation& relR = RelRs[i];
     acc(openMVG::FrobeniusNorm(relR.Rij  - (Rs[relR.j]*Rs[relR.i].transpose())));
   }
   if (pMin)
@@ -480,9 +243,9 @@ REAL RelRotationAvgError(const std::vector<RelRotationData>& RelRs, const Matrix
     *pMax = boost::accumulators::max(acc);
   return boost::accumulators::mean(acc);
 #else
-  std::vector<REAL> vec_err(RelRs.size(), REAL(0.0));
+  std::vector<double> vec_err(RelRs.size(), 0.0);
   for(int i=0; i < RelRs.size(); ++i) {
-    const RelRotationData& relR = RelRs[i];
+    const RelativeRotation& relR = RelRs[i];
     vec_err[i] = openMVG::FrobeniusNorm(relR.Rij  - (Rs[relR.j]*Rs[relR.i].transpose()));
   }
   float min, max, mean, median;
@@ -496,16 +259,12 @@ REAL RelRotationAvgError(const std::vector<RelRotationData>& RelRs, const Matrix
 }
 //----------------------------------------------------------------
 
-
-// Robustly estimate global rotations from relative rotations as in:
-// "Efficient and Robust Large-Scale Rotation Averaging", Chatterjee and Govindu, 2013
-// and detect outliers relative rotations and return them with 0 in arrInliers
-bool GlobalRotationsRobust(
-  const std::vector<RelRotationData>& RelRs,
+void InitRotationsMST
+(
+  const RelativeRotations& RelRs,
   Matrix3x3Arr& Rs,
-  const size_t nMainViewID,
-  float threshold,
-  std::vector<bool> * vec_Inliers)
+  const size_t nMainViewID
+)
 {
   assert(!Rs.empty());
 
@@ -542,13 +301,25 @@ bool GlobalRotationsRobust(
     }
     stack.pop();
   } while(!stack.empty());
-  minGraph.clear();
-  mapIJ2R.clear();
+}
 
-  bool bOk = true;
+// Robustly estimate global rotations from relative rotations as in:
+// "Efficient and Robust Large-Scale Rotation Averaging", Chatterjee and Govindu, 2013
+// and detect outliers relative rotations and return them with 0 in arrInliers
+bool GlobalRotationsRobust(
+  const RelativeRotations& RelRs,
+  Matrix3x3Arr& Rs,
+  const size_t nMainViewID,
+  float threshold,
+  std::vector<bool> * vec_Inliers)
+{
+  assert(!Rs.empty());
+
+  // -- Compute coarse global rotation estimates:
+  InitRotationsMST(RelRs, Rs, nMainViewID);
 
   // refine global rotations based on the relative rotations
-  bOk &= RefineRotationsAvgL1IRLS(RelRs, Rs, nMainViewID);
+  const bool bOk = RefineRotationsAvgL1IRLS(RelRs, Rs, nMainViewID);
 
   // find outlier relative rotations
   if (threshold>=0 && vec_Inliers)  {
@@ -559,28 +330,30 @@ bool GlobalRotationsRobust(
 } // GlobalRotationsRobust
 //----------------------------------------------------------------
 
+namespace internal
+{
 
 // build A in Ax=b
-inline void _FillMappingMatrix(
-  const std::vector<RelRotationData>& RelRs,
+inline void FillMappingMatrix(
+  const RelativeRotations& RelRs,
   const size_t nMainViewID,
-  Eigen::SparseMatrix<REAL,Eigen::ColMajor>& A)
+  sMat& A)
 {
   A.reserve(A.rows()*2); // estimate of the number of non-zeros (optional)
-  Eigen::SparseMatrix<REAL,Eigen::ColMajor>::Index i = 0, j = 0;
+  sMat::Index i = 0, j = 0;
   for(int r=0; r<RelRs.size(); ++r) {
-    const RelRotationData& relR = RelRs[r];
+    const RelativeRotation& relR = RelRs[r];
     if (relR.i != nMainViewID) {
       j = 3*(relR.i<nMainViewID ? relR.i : relR.i-1);
-      A.insert(i+0,j+0) = REAL(-1);
-      A.insert(i+1,j+1) = REAL(-1);
-      A.insert(i+2,j+2) = REAL(-1);
+      A.insert(i+0,j+0) = -1.0;
+      A.insert(i+1,j+1) = -1.0;
+      A.insert(i+2,j+2) = -1.0;
     }
     if (relR.j != nMainViewID) {
       j = 3*(relR.j<nMainViewID ? relR.j : relR.j-1);
-      A.insert(i+0,j+0) = REAL(1);
-      A.insert(i+1,j+1) = REAL(1);
-      A.insert(i+2,j+2) = REAL(1);
+      A.insert(i+0,j+0) = 1.0;
+      A.insert(i+1,j+1) = 1.0;
+      A.insert(i+2,j+2) = 1.0;
     }
     i+=3;
   }
@@ -588,26 +361,26 @@ inline void _FillMappingMatrix(
 }
 
 // compute errors for each relative rotation
-inline void _FillErrorMatrix(
-  const std::vector<RelRotationData>& RelRs,
+inline void FillErrorMatrix(
+  const RelativeRotations& RelRs,
   const Matrix3x3Arr& Rs,
-  Eigen::Matrix<REAL,Eigen::Dynamic,1>& b)
+  Vec & b)
 {
   for (size_t r = 0; r < RelRs.size(); ++r) {
-    const RelRotationData& relR = RelRs[r];
+    const RelativeRotation& relR = RelRs[r];
     const Matrix3x3& Ri = Rs[relR.i];
     const Matrix3x3& Rj = Rs[relR.j];
     const Matrix3x3& Rij = relR.Rij;
     const Mat3 eRij(Rj.transpose()*Rij*Ri);
     const openMVG::Vec3 erij;
     ceres::RotationMatrixToAngleAxis((const double*)eRij.data(), (double*)erij.data());
-    b.block<3,1>(3*r,0) = openMVG::Vec3(erij*relR.weight);
+    b.block<3,1>(3*r,0) = erij;
   }
 }
 
 // apply correction to global rotations
-inline void _CorrectMatrix(
-  const Eigen::Matrix<REAL,Eigen::Dynamic,1>& x,
+inline void CorrectMatrix(
+  const Mat& x,
   const size_t nMainViewID,
   Matrix3x3Arr& Rs)
 {
@@ -616,26 +389,146 @@ inline void _CorrectMatrix(
       continue;
     Matrix3x3& Ri = Rs[r];
     const size_t i = (r<nMainViewID ? r : r-1);
-    openMVG::Vec3 eRid = openMVG::Vec3(x.block<3,1>(3*i,0));
+    const openMVG::Vec3 eRid = openMVG::Vec3(x.block<3,1>(3*i,0));
     const Mat3 eRi;
     ceres::AngleAxisToRotationMatrix((const double*)eRid.data(), (double*)eRi.data());
     Ri = Ri*eRi;
   }
 }
 
+// L1RA -> L1 Rotation Averaging implementation
+bool SolveL1RA
+(
+  const RelativeRotations& RelRs,
+  Matrix3x3Arr& Rs,
+  const sMat & A,
+  const unsigned int nMainViewID
+)
+{
+  const unsigned nObss = (unsigned)RelRs.size();
+  const unsigned nVars = (unsigned)Rs.size()-1; // one view is kept constant
+  const unsigned m = nObss*3;
+  const unsigned n = nVars*3;
+
+  // init x with 0 that corresponds to trusting completely the initial Ri guess
+  Vec x(Vec::Zero(n)), b(m);
+
+  // Current error and the previous one
+  double e = std::numeric_limits<double>::max(), ep;
+  unsigned iter = 0;
+  // L1RA iterate optimization till the desired precision is reached
+  do {
+    // compute errors for each relative rotation
+    FillErrorMatrix(RelRs, Rs, b);
+
+    // solve the linear system using l1 norm
+    L1Solver<sMat >::Options options;
+    L1Solver<sMat > l1_solver(options, A);
+    l1_solver.Solve(b, &x);
+
+    ep = e; e = x.norm();
+    if (ep < e)
+      break;
+    // apply correction to global rotations
+    CorrectMatrix(x, nMainViewID, Rs);
+  } while (++iter < 32 && e > 1e-5 && (ep-e)/e > 1e-2);
+
+  std::cout << "L1RA Converged in " << iter << " iterations." << std::endl;
+
+  return true;
+}
+
+// Iteratively Reweighted Least Squares (IRLS) implementation
+bool SolveIRLS
+(
+  const RelativeRotations& RelRs,
+  Matrix3x3Arr& Rs,
+  const sMat & A,
+  const unsigned int nMainViewID,
+  const double sigma
+)
+{
+  const unsigned nObss = (unsigned)RelRs.size();
+  const unsigned nVars = (unsigned)Rs.size()-1; // one view is kept constant
+  const unsigned m = nObss*3;
+  const unsigned n = nVars*3;
+
+  // init x with 0 that corresponds to trusting completely the initial Ri guess
+  Vec x(Vec::Zero(n)), b(m);
+
+  // Since the sparsity pattern will not change with each linear solve
+  //  compute it once to speed up the solution time.
+  typedef Eigen::SimplicialLDLT<sMat > Linear_Solver_T;
+
+  Linear_Solver_T linear_solver;
+  linear_solver.analyzePattern(A.transpose() * A);
+  if (linear_solver.info() != Eigen::Success) {
+    std::cerr << "Cholesky decomposition failed." << std::endl;
+    return false;
+  }
+
+  const double sigmaSq(Square(sigma));
+
+  Eigen::ArrayXd errors, weights;
+  Vec xp(n);
+  // current error and the previous one
+  double e = std::numeric_limits<double>::max(), ep;
+  unsigned int iter = 0;
+  do
+  {
+    xp = x;
+    // compute errors for each relative rotation
+    FillErrorMatrix(RelRs, Rs, b);
+
+    // Compute the weights for each error term
+    errors = (A * x - b).array();
+
+    // compute robust errors using the Huber-like loss function
+    weights = sigmaSq / (errors.square() + sigmaSq).square();
+
+    // Update the factorization for the weighted values
+    const sMat at_weight = A.transpose() * weights.matrix().asDiagonal();
+    linear_solver.factorize(at_weight * A);
+    if (linear_solver.info() != Eigen::Success) {
+      std::cerr << "Failed to factorize the least squares system." << std::endl;
+      return false;
+    }
+
+    // Solve the least squares problem
+    x = linear_solver.solve(at_weight * b);
+    if (linear_solver.info() != Eigen::Success) {
+      std::cerr << "Failed to solve the least squares system." << std::endl;
+      return false;
+    }
+
+    // apply correction to global rotations
+    CorrectMatrix(x, nMainViewID, Rs);
+
+    ep = e; e = (xp-x).norm();
+
+  } while (++iter < 32 && e > 1e-5 && (ep-e)/e > 1e-2);
+
+  std::cout << "IRLS Converged in " << iter << " iterations." << std::endl;
+
+  return true;
+}
+
+} // namespace internal
+
 // Refine the global rotations using to the given relative rotations, similar to:
 // "Efficient and Robust Large-Scale Rotation Averaging", Chatterjee and Govindu, 2013
 // L1 Rotation Averaging (L1RA) and Iteratively Reweighted Least Squares (IRLS) implementations combined
 bool RefineRotationsAvgL1IRLS(
-  const std::vector<RelRotationData>& RelRs,
+  const RelativeRotations& RelRs,
   Matrix3x3Arr& Rs,
   const size_t nMainViewID,
-  REAL sigma)
+  const double sigma)
 {
   assert(!RelRs.empty() && !Rs.empty());
   assert(Rs[nMainViewID] == Matrix3x3::Identity());
 
-  REAL fMinBefore, fMaxBefore, fMeanBefore = RelRotationAvgError(RelRs, Rs, &fMinBefore, &fMaxBefore);
+  double fMinBefore, fMaxBefore;
+  const double fMeanBefore = RelRotationAvgError(RelRs, Rs, &fMinBefore, &fMaxBefore);
 
   const unsigned nObss = (unsigned)RelRs.size();
   const unsigned nVars = (unsigned)Rs.size()-1; // main view is kept constant
@@ -643,54 +536,27 @@ bool RefineRotationsAvgL1IRLS(
   const unsigned n = nVars*3;
 
   // build mapping matrix A in Ax=b
-  Eigen::SparseMatrix<REAL,Eigen::ColMajor> A(m, n);
-  _FillMappingMatrix(RelRs, nMainViewID, A);
+  sMat A(m, n);
+  internal::FillMappingMatrix(RelRs, nMainViewID, A);
 
-  // init x with 0 that corresponds to trusting completely the initial Ri guess
-  Vec x(Vec::Zero(n)), b(m);
+  if (!internal::SolveL1RA(RelRs, Rs, A, nMainViewID))
+  {
+    std::cerr << "Could not solve the L1 regression step." << std::endl;
+    return false;
+  }
 
-  // L1RA iterate optimization till the desired precision is reached
-  REAL e = std::numeric_limits<REAL>::max(), ep;
-  unsigned iter1 = 0;
-  do {
-    // compute errors for each relative rotation
-    _FillErrorMatrix(RelRs, Rs, b);
-    // solve the linear system using l1 norm
-    if (!RobustRegressionL1PD(A, b, x)) {
-      std::cerr << "error: l1 robust regression failed." << std::endl;
-      return false;
-    }
-    ep = e; e = x.norm();
-    if (ep < e)
-      break;
-    // apply correction to global rotations
-    _CorrectMatrix(x, nMainViewID, Rs);
-  } while (++iter1 < 32 && e > 1e-5 && (ep-e)/e > 1e-2);
-  // IRLS iterate optimization till the desired precision is reached
-  x.setZero();
-  e = std::numeric_limits<REAL>::max();
-  unsigned iter2 = 0;
-  do {
-    // compute errors for each relative rotation
-    _FillErrorMatrix(RelRs, Rs, b);
-    // solve the linear system using l2 norm
-    if (!IterativelyReweightedLeastSquares(A, b, x, sigma)) {
-      std::cerr << "error: l2 iterative regression failed" << std::endl;
-      return false;
-    }
-    ep = e; e = x.norm();
-    if (ep < e)
-      break;
-    // apply correction to global rotations
-    _CorrectMatrix(x, nMainViewID, Rs);
-  } while (++iter2 < 32 && e > 1e-5 && (ep-e)/e > 1e-2);
+  if (!internal::SolveIRLS(RelRs, Rs, A, nMainViewID, sigma))
+  {
+    std::cerr << "Could not solve the ILRS step." << std::endl;
+    return false;
+  }
 
-  REAL fMinAfter, fMaxAfter, fMeanAfter = RelRotationAvgError(RelRs, Rs, &fMinAfter, &fMaxAfter);
+  double fMinAfter, fMaxAfter;
+  const double fMeanAfter = RelRotationAvgError(RelRs, Rs, &fMinAfter, &fMaxAfter);
 
   std::cout << "Refine global rotations using L1RA-IRLS and " << nObss << " relative rotations:\n"
     << " error reduced from " << fMeanBefore << "(" <<fMinBefore << " min, " << fMaxBefore << " max)\n"
-    << " to " << fMeanAfter << "(" << fMinAfter << "min,"<< fMaxAfter<< "max)\n"
-    << " in " << iter1 << "+" << iter2 << "=" << iter1+iter2 << " iterations" << std::endl;
+    << " to " << fMeanAfter << "(" << fMinAfter << "min,"<< fMaxAfter<< "max)" << std::endl;
 
   return true;
 } // RefineRotationsAvgL1IRLS

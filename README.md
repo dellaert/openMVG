@@ -20,10 +20,10 @@ Building
 
 See [BUILD](https://github.com/openMVG/openMVG/raw/master/BUILD) text file
 
-Continuous integration [![Build Status](https://travis-ci.org/openMVG/openMVG.png?branch=develop)](https://travis-ci.org/openMVG/openMVG) [![Coverage Status](https://coveralls.io/repos/openMVG/openMVG/badge.png?branch=develop)](https://coveralls.io/r/openMVG/openMVG?branch=develop):
- - develop branch: BUILD + UNIT TESTING
- - linux 64 bits (GCC + clang).
-
+Continuous integration:
+ - linux 64 bits/GCC (Build + tests): [![Build Status](https://travis-ci.org/openMVG/openMVG.png?branch=develop)](https://travis-ci.org/openMVG/openMVG)
+ - VStudio 2015 64 bits (Build): [![Build status](https://ci.appveyor.com/api/projects/status/3nv6rt41yxqx5v7i?svg=true)](https://ci.appveyor.com/project/pmoulon/openmvg)
+ - Unit test coverage: [![Coverage Status](https://coveralls.io/repos/openMVG/openMVG/badge.png?branch=develop)](https://coveralls.io/r/openMVG/openMVG?branch=develop)
 
 -------
 License
@@ -78,5 +78,16 @@ publications are relevant:
 [5] Moisan Lionel, Moulon Pierre and Monasse Pascal. IPOL 2012.
 [Automatic Homographic Registration of a Pair of Images, with A Contrario Elimination of Outliers.](http://dx.doi.org/10.5201/ipol.2012.mmm-oh)
 
-Please cite [3] if you use openMVG library in your work.
+[6] Moulon Pierre, Monasse Pascal and Marlet Renaud. ICCV 2013.
+[Global Fusion of Relative Motions for Robust, Accurate and Scalable Structure from Motion.](http://imagine.enpc.fr/~moulonp/publis/iccv2013/index.html)
+
+or cite it as:
+
+```
+  @misc{openMVG,
+    author = "Pierre Moulon and Pascal Monasse and Renaud Marlet and Others",
+     title = "OpenMVG. An Open Multiple View Geometry library.",
+    howpublished = "\url{https://github.com/openMVG/openMVG}",
+  }
+```
 

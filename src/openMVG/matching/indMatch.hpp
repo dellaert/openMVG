@@ -8,6 +8,10 @@
 #ifndef OPENMVG_MATCHING_IND_MATCH_H
 #define OPENMVG_MATCHING_IND_MATCH_H
 
+#include "openMVG/types.hpp"
+
+#include <cereal/cereal.hpp> // Serialization
+
 #include <iostream>
 #include <set>
 #include <map>
@@ -20,13 +24,13 @@ namespace matching {
 /// A sort operator exist in order to remove duplicates of IndMatch series.
 struct IndMatch
 {
-  IndMatch(size_t i = 0, size_t j = 0)  {
-    _i = i;
-    _j = j;
+  IndMatch(IndexT i = 0, IndexT j = 0)  {
+    i_ = i;
+    j_ = j;
   }
 
   friend bool operator==(const IndMatch& m1, const IndMatch& m2)  {
-    return (m1._i == m2._i && m1._j == m2._j);
+    return (m1.i_ == m2.i_ && m1.j_ == m2.j_);
   }
 
   friend bool operator!=(const IndMatch& m1, const IndMatch& m2)  {
@@ -35,38 +39,48 @@ struct IndMatch
 
   // Lexicographical ordering of matches. Used to remove duplicates.
   friend bool operator<(const IndMatch& m1, const IndMatch& m2) {
-    if (m1._i < m2._i)
-      return m1._j < m2._j;
-    else
-      if (m1._i > m2._i)
-        return m1._j < m2._j;
-    return m1._i < m2._i;
+    return (m1.i_ < m2.i_ || (m1.i_ == m2.i_ && m1.j_ < m2.j_));
   }
 
-  /// Remove duplicates (same _i or _j that appears multiple times)
-  static bool getDeduplicated(std::vector<IndMatch> & vec_match){
+  /// Remove duplicates ((i_, j_) that appears multiple times)
+  static bool getDeduplicated(std::vector<IndMatch> & vec_match)  {
 
-    size_t sizeBefore = vec_match.size();
+    const size_t sizeBefore = vec_match.size();
     std::set<IndMatch> set_deduplicated( vec_match.begin(), vec_match.end());
     vec_match.assign(set_deduplicated.begin(), set_deduplicated.end());
     return sizeBefore != vec_match.size();
   }
 
-  size_t _i, _j;  // Left, right index
+  // Serialization
+  template <class Archive>
+  void serialize( Archive & ar )  {
+    ar(i_, j_);
+  }
+
+  IndexT i_, j_;  // Left, right index
 };
 
-static std::ostream& operator<<(std::ostream & out, const IndMatch & obj) {
-  return out << obj._i << " " << obj._j;
+inline std::ostream& operator<<(std::ostream & out, const IndMatch & obj) {
+  return out << obj.i_ << " " << obj.j_;
 }
 
-static inline std::istream& operator>>(std::istream & in, IndMatch & obj) {
-  return in >> obj._i >> obj._j;
+inline std::istream& operator>>(std::istream & in, IndMatch & obj) {
+  return in >> obj.i_ >> obj.j_;
 }
 
+typedef std::vector<matching::IndMatch> IndMatches;
 //--
-// Pairwise matches (indexed matches for a pair <I,J>)
+/// Pairwise matches (indexed matches for a pair <I,J>)
 /// The structure used to store corresponding point indexes per images pairs
-typedef std::map< std::pair<size_t, size_t>, std::vector<matching::IndMatch> > PairWiseMatches;
+typedef std::map< Pair, IndMatches > PairWiseMatches;
+
+inline Pair_Set getPairs(const PairWiseMatches & matches)
+{
+  Pair_Set pairs;
+  for( const auto & cur_pair : matches ) 
+    pairs.insert(cur_pair.first);
+  return pairs;
+}
 
 }  // namespace matching
 }  // namespace openMVG
